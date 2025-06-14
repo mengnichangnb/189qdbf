@@ -1,0 +1,31 @@
+name: TianYi Cloud Sign-in
+
+on:
+  schedule:
+    - cron: '0 22 * * *' # 每天 UTC 22:00（北京时间早上6:00）运行
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv rsa
+
+      - name: Run sign-in script
+        env:
+          TYYP_USERNAME: ${{ secrets.TYYP_USERNAME }}
+          TYYP_PSW: ${{ secrets.TYYP_PSW }}
+          MAX_WORKERS: ${{ vars.MAX_WORKERS || 4 }}
+        run: |
+          python tianyi_bot.py
