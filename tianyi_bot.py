@@ -283,7 +283,7 @@ def main():
     print()
 
     accounts = load_accounts_from_env()
-    # 从环境变量读取最大并发工作线程数，默认为4
+    # 从环境变量读取最大并发工作线程数，默认为20
     max_workers = int(os.getenv("MAX_WORKERS"， 20))
 
     print("## 执行概览")
