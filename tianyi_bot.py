@@ -284,7 +284,7 @@ def main():
 
     accounts = load_accounts_from_env()
     # 从环境变量读取最大并发工作线程数，默认为4
-    max_workers = int(os.getenv("MAX_WORKERS", 4))
+    max_workers = int(os.getenv("MAX_WORKERS"， 20))
 
     print("## 执行概览")
     print(f"- **启动时间**: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
