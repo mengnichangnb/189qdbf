@@ -6,6 +6,7 @@ import rsa
 import requests
 import os
 import sys
+import random
 from datetime import datetime
 from typing import List, Dict, Tuple
 from dotenv import load_dotenv
@@ -153,6 +154,9 @@ class TianYiCloudBot:
     def sign_in(self) -> Tuple[bool, str]:
         """执行每日签到。"""
         try:
+            # 引入一个微小的随机延迟（0.1到0.5秒），以避免触发服务器的速率限制
+            time.sleep(random.uniform(0.1, 0.5))
+
             rand = str(round(time.time() * 1000))
             sign_url = Config.SIGN_URL_TEMPLATE.format(rand)
             response = self.session.get(sign_url, headers=Config.SIGN_HEADERS, timeout=10)
