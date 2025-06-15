@@ -180,7 +180,7 @@ class TianYiCloudBot:
     def run(self) -> Dict[str, any]:
         """
         执行完整的登录和并发签到流程。
-        登录后，使用20个线程并发执行签到任务。
+        登录后，使用50个线程并发执行签到任务。
         """
         results = {'account_id': self.account_id, 'login': '登录失败', 'sign_in_summary': None}
         
@@ -189,10 +189,10 @@ class TianYiCloudBot:
         results['login'] = '登录成功'
 
         sign_in_results = []
-        # 使用20个线程并发执行签到
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            # 提交20个签到任务
-            future_to_run = {executor.submit(self.sign_in): i for i in range(20)}
+        # 使用50个线程并发执行签到
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            # 提交50个签到任务
+            future_to_run = {executor.submit(self.sign_in): i for i in range(50)}
 
             for future in as_completed(future_to_run):
                 run_num = future_to_run[future]
@@ -204,12 +204,12 @@ class TianYiCloudBot:
         
         # 汇总签到结果
         success_count = sum(1 for r in sign_in_results if r['success'])
-        failure_count = 20 - success_count
+        failure_count = 50 - success_count
         # 提取并去重所有返回的消息
         unique_messages = sorted(list(set(r['message'] for r in sign_in_results)))
 
         results['sign_in_summary'] = {
-            'total_attempts': 20,
+            'total_attempts': 50,
             'success_count': success_count,
             'failure_count': failure_count,
             'messages': unique_messages
@@ -280,7 +280,7 @@ def main():
     print("## 执行概览")
     print(f"- **启动时间**: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"- **账户数量**: {len(accounts)} 个")
-    print(f"- **签到并发线程数**: 20")
+    print(f"- **签到并发线程数**: 50")
     print("-" * 20)
 
     # 依次处理每个账户
