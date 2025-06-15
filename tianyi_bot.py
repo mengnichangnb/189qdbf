@@ -2,13 +2,12 @@ import time
 import re
 import json
 import base64
-import hashlib
 import rsa
 import requests
 import os
 import sys
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Tuple
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -24,13 +23,6 @@ class Config:
     LOGIN_TOKEN_URL = "https://m.cloud.189.cn/udb/udb_login.jsp?pageId=1&pageKey=default&clientType=wap&redirectURL=https://m.cloud.189.cn/zhuanti/2021/shakeLottery/index.html"
     LOGIN_SUBMIT_URL = "https://open.e.189.cn/api/logbox/oauth2/loginSubmit.do"
     SIGN_URL_TEMPLATE = "https://api.cloud.189.cn/mkt/userSign.action?rand={}&clientType=TELEANDROID&version=8.6.3&model=SM-G930K"
-
-    # 抽奖URL
-    DRAW_URLS = [
-        "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_SIGNIN&activityId=ACT_SIGNIN",
-        "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_SIGNIN_PHOTOS&activityId=ACT_SIGNIN",
-        "https://m.cloud.189.cn/v2/drawPrizeMarketDetails.action?taskId=TASK_2022_FLDFS_KJ&activityId=ACT_SIGNIN"
-    ]
 
     # 请求头
     LOGIN_HEADERS = {
@@ -95,7 +87,7 @@ class CryptoUtils:
 
 class TianYiCloudBot:
     """
-    天翼云盘自动签到和抽奖机器人。
+    天翼云盘自动签到机器人。
     """
     def __init__(self, username: str, password: str, account_id: str = ""):
         self.username = username
@@ -170,59 +162,54 @@ class TianYiCloudBot:
             if result.get('isSign'):
                 return True, f"已签到，获得{netdisk_bonus}M空间"
             else:
+                # 根据原始逻辑，这个分支也可能表示成功
                 return True, f"签到成功，获得{netdisk_bonus}M空间"
+        except requests.exceptions.RequestException as e:
+             # 处理网络相关的错误
+             return False, f"签到网络请求失败: {e}"
+        except json.JSONDecodeError:
+             # 处理响应不是有效JSON的情况
+             return False, "签到失败：无法解析服务器响应"
         except Exception as e:
             return False, f"签到失败: {e}"
 
-    def draw_prize(self, round_num: int, url: str) -> Tuple[bool, str]:
-        """执行单次抽奖。"""
-        try:
-            response = self.session.get(url, headers=Config.SIGN_HEADERS, timeout=10)
-            data = response.json()
-
-            if "errorCode" in data:
-                return False, f"抽奖失败，次数不足"
-            else:
-                prize_name = data.get("prizeName", "未知奖品")
-                return True, f"抽奖成功，获得【{prize_name}】"
-        except Exception as e:
-            return False, f"第{round_num}次抽奖出错: {e}"
-
     def run(self) -> Dict[str, any]:
         """
-        执行完整的签到和抽奖流程。
-        登录是串行的，登录成功后，签到和所有抽奖任务将并发执行。
+        执行完整的登录和并发签到流程。
+        登录后，使用20个线程并发执行签到任务。
         """
-        results = {'account_id': self.account_id, 'login': '登录失败', 'sign_in': '未执行', 'draws': [None] * len(Config.DRAW_URLS)}
+        results = {'account_id': self.account_id, 'login': '登录失败', 'sign_in_summary': None}
         
         if not self.login():
             return results
         results['login'] = '登录成功'
 
-        # 登录成功后，将签到和所有抽奖任务并发执行
-        with ThreadPoolExecutor(max_workers=1 + len(Config.DRAW_URLS)) as executor:
-            # 提交签到任务
-            future_signin = executor.submit(self.sign_in)
-            
-            # 提交所有抽奖任务
-            future_draws = {executor.submit(self.draw_prize, i + 1, url): i for i, url in enumerate(Config.DRAW_URLS)}
+        sign_in_results = []
+        # 使用20个线程并发执行签到
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            # 提交20个签到任务
+            future_to_run = {executor.submit(self.sign_in): i for i in range(20)}
 
-            # 获取签到结果
-            try:
-                _, sign_msg = future_signin.result()
-                results['sign_in'] = sign_msg
-            except Exception as exc:
-                results['sign_in'] = f"签到任务产生异常: {exc}"
-                
-            # 获取抽奖结果
-            for future in as_completed(future_draws):
-                index = future_draws[future]
+            for future in as_completed(future_to_run):
+                run_num = future_to_run[future]
                 try:
-                    _, draw_msg = future.result()
-                    results['draws'][index] = draw_msg
+                    success, msg = future.result()
+                    sign_in_results.append({'success': success, 'message': msg})
                 except Exception as exc:
-                    results['draws'][index] = f"第{index + 1}次抽奖任务产生异常: {exc}"
-                    
+                    sign_in_results.append({'success': False, 'message': f"任务 {run_num + 1} 产生异常: {exc}"})
+        
+        # 汇总签到结果
+        success_count = sum(1 for r in sign_in_results if r['success'])
+        failure_count = 20 - success_count
+        # 提取并去重所有返回的消息
+        unique_messages = sorted(list(set(r['message'] for r in sign_in_results)))
+
+        results['sign_in_summary'] = {
+            'total_attempts': 20,
+            'success_count': success_count,
+            'failure_count': failure_count,
+            'messages': unique_messages
+        }
         return results
 
 def load_accounts_from_env() -> List[Tuple[str, str]]:
@@ -247,7 +234,7 @@ def load_accounts_from_env() -> List[Tuple[str, str]]:
 
 def process_account(account_info: Tuple[int, Tuple[str, str]]) -> str:
     """
-    处理单个账户（登录、签到、抽奖）并返回格式化的结果字符串。
+    处理单个账户（登录、并发签到）并返回格式化的结果字符串。
     """
     i, (username, password) = account_info
     account_id = f"账户{i} ({username[:3]}***)"
@@ -259,16 +246,19 @@ def process_account(account_info: Tuple[int, Tuple[str, str]]) -> str:
 
         output.append("### 执行结果")
         output.append(f"- **登录状态**: {results['login']}")
-        output.append(f"- **签到结果**: {results['sign_in']}")
 
-        if results['draws']:
-            output.append("- **抽奖结果**:")
-            for j, draw_result in enumerate(results['draws'], 1):
-                clean_result = str(draw_result)
-                if "成功" in clean_result or "获得" in clean_result:
-                    output.append(f"  - 🎉 第{j}次: {clean_result}")
-                else:
-                    output.append(f"  - ❌ 第{j}次: {clean_result}")
+        if results.get('sign_in_summary'):
+            summary = results['sign_in_summary']
+            output.append("- **并发签到结果**:")
+            output.append(f"  - **总尝试次数**: {summary['total_attempts']}")
+            output.append(f"  - ✅ **成功次数**: {summary['success_count']}")
+            output.append(f"  - ❌ **失败次数**: {summary['failure_count']}")
+            output.append("  - **返回信息汇总**:")
+            if summary['messages']:
+                for msg in summary['messages']:
+                    output.append(f"    - {msg}")
+            else:
+                output.append("    - 未收到任何返回信息。")
     except Exception as e:
         output.append(f"### {account_id} 发生意外错误")
         output.append(f"- **错误信息**: {e}")
@@ -278,7 +268,7 @@ def process_account(account_info: Tuple[int, Tuple[str, str]]) -> str:
 def main():
     """主程序入口。"""
     start_time = datetime.now()
-    print("# 天翼云盘自动签到抽奖程序（签到/抽奖并发版）")
+    print("# 天翼云盘自动并发签到程序")
     print()
 
     accounts = load_accounts_from_env()
@@ -286,6 +276,7 @@ def main():
     print("## 执行概览")
     print(f"- **启动时间**: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"- **账户数量**: {len(accounts)} 个")
+    print(f"- **签到并发线程数**: 20")
     print("-" * 20)
 
     # 依次处理每个账户
