@@ -7,7 +7,6 @@ import requests
 import os
 import sys
 import random
-import threading # 导入 threading 模块用于获取线程ID
 from datetime import datetime
 from typing import List, Dict, Tuple
 from dotenv import load_dotenv
@@ -113,20 +112,19 @@ class TianYiCloudBot:
     def login(self) -> bool:
         """登录天翼云盘。"""
         try:
-            print(f"[{self.account_id}] 开始登录...")
-            resp_token = self.session.get(Config.LOGIN_TOKEN_URL, timeout=10)
+            resp_token = self.session.get(Config.LOGIN_TOKEN_URL)
             match_redirect = re.search(r"https?://[^\s'\"]+", resp_token.text)
             if not match_redirect:
-                print(f"[{self.account_id}] 初始响应中找不到重定向URL。")
-                return False
-            
-            resp_redirect = self.session.get(match_redirect.group(), timeout=10)
-            match_href = re.search(r"<a id=\"j-tab-login-link\"[^>]*href=\"([^\"]+)\"", resp_redirect.text)
-            if not match_href:
-                print(f"[{self.account_id}] 找不到登录链接href。")
+                print("在初始响应中找不到重定向URL。")
                 return False
 
-            resp_login_page = self.session.get(match_href.group(1), timeout=10)
+            resp_redirect = self.session.get(match_redirect.group())
+            match_href = re.search(r"]*href=\"([^\"]+)\"", resp_redirect.text)
+            if not match_href:
+                print("找不到登录链接href。")
+                return False
+
+            resp_login_page = self.session.get(match_href.group(1))
             login_params = self._extract_login_params(resp_login_page.text)
             self.session.headers.update({"lt": login_params['lt']})
 
@@ -141,119 +139,77 @@ class TianYiCloudBot:
                 "paramId": login_params['paramId']
             }
             resp_submit = self.session.post(Config.LOGIN_SUBMIT_URL, data=login_data, headers=Config.LOGIN_HEADERS, timeout=10)
-            
+
             result = resp_submit.json()
             if result.get('result') == 0:
-                self.session.get(result['toUrl'], timeout=10)
-                print(f"[{self.account_id}] 登录成功！")
+                self.session.get(result['toUrl'])
                 return True
             else:
-                print(f"[{self.account_id}] 登录失败，信息：{result.get('msg')}")
+                print(f"登录失败，信息：{result.get('msg')}")
                 return False
         except Exception as e:
-            print(f"[{self.account_id}] 登录过程中发生错误：{e}")
+            print(f"登录过程中发生错误：{e}")
             return False
 
-    def sign_in(self, task_num: int, max_retries: int = 3, initial_delay: float = 0.5) -> Tuple[bool, str]:
-        """
-        执行每日签到，支持重试机制，区分网络错误和业务错误。
-        :param task_num: 当前是第几个签到任务（用于日志）。
-        :param max_retries: 最大重试次数。
-        :param initial_delay: 初始重试延迟秒数。
-        """
-        thread_id = threading.get_ident() # 获取当前线程ID
-        for attempt in range(max_retries):
-            try:
-                # 引入随机延迟，重试时延迟指数增加，并加入少量随机扰动
-                delay = random.uniform(initial_delay * (2**attempt), initial_delay * (2**attempt + 0.5))
-                if attempt > 0: # 首次尝试时也加入一个基础延迟
-                    time.sleep(delay)
-                else:
-                    time.sleep(random.uniform(0.1, 0.3)) # 首次尝试的较短延迟
+    def sign_in(self) -> Tuple[bool, str]:
+        """执行每日签到。"""
+        try:
+            # 引入一个微小的随机延迟（0.1到0.5秒），以避免触发服务器的速率限制
+            time.sleep(random.uniform(0.1, 0.5))
 
-                # 细化 rand 参数的生成，确保唯一性
-                # 格式：时间戳_随机数(4位)_线程ID_任务编号
-                rand = f"{round(time.time() * 1000)}_{random.randint(1000, 9999)}_{thread_id}_{task_num}"
-                sign_url = Config.SIGN_URL_TEMPLATE.format(rand)
-                
-                print(f"[{self.account_id}] 任务 {task_num} (尝试 {attempt + 1}/{max_retries}) - 请求URL: {sign_url}")
-                response = self.session.get(sign_url, headers=Config.SIGN_HEADERS, timeout=15) # 增加超时时间
-                response.raise_for_status() # 检查 HTTP 状态码，如果不是 2xx 则抛出异常
-                result = response.json()
-                
-                netdisk_bonus = result.get('netdiskBonus', 0)
-                # 区分业务成功和业务失败/已签到
-                if result.get('isSign') or result.get('code') == 'SUCCESS':
-                    msg = f"签到成功，获得{netdisk_bonus}M空间"
-                    print(f"[{self.account_id}] 任务 {task_num} - {msg}")
-                    return True, msg
-                elif result.get('code') == 'ALREADY_SIGNED': # 假设存在“已签到”的code
-                    msg = f"已签到，获得{netdisk_bonus}M空间 (已重复签到，视为成功)"
-                    print(f"[{self.account_id}] 任务 {task_num} - {msg}")
-                    return True, msg # 虽然是重复，但也算任务“完成”，根据您的需求可调整
-                else:
-                    # 业务失败，例如参数错误、操作频繁等，不进行重试
-                    msg = f"签到业务失败: {result.get('msg', '未知业务错误')} (code: {result.get('code')})"
-                    print(f"[{self.account_id}] 任务 {task_num} - {msg}")
-                    return False, msg # 业务失败，不重试
+            rand = str(round(time.time() * 1000))
+            sign_url = Config.SIGN_URL_TEMPLATE.format(rand)
+            response = self.session.get(sign_url, headers=Config.SIGN_HEADERS, timeout=10)
+            result = response.json()
 
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.RequestException) as e:
-                # 网络或请求错误，可以重试
-                error_msg = f"签到网络请求失败 (任务 {task_num}, 尝试 {attempt + 1}/{max_retries}): {e}"
-                print(f"[{self.account_id}] {error_msg}")
-                if attempt == max_retries - 1:
-                    return False, error_msg # 达到最大重试次数，最终失败
-            except json.JSONDecodeError:
-                # 响应不是有效的 JSON，也可能是服务器问题，可以重试
-                error_msg = f"签到失败：无法解析服务器响应 (任务 {task_num}, 尝试 {attempt + 1}/{max_retries})"
-                print(f"[{self.account_id}] {error_msg}. 响应内容: {response.text[:200] if 'response' in locals() else '无响应'}")
-                if attempt == max_retries - 1:
-                    return False, error_msg
-            except Exception as e:
-                # 其他未知错误，通常不重试
-                error_msg = f"签到发生未知错误 (任务 {task_num}): {e}"
-                print(f"[{self.account_id}] {error_msg}")
-                return False, error_msg
-        
-        return False, f"签到失败：任务 {task_num} 达到最大重试次数"
-
+            netdisk_bonus = result.get('netdiskBonus', 0)
+            if result.get('isSign'):
+                return True, f"已签到，获得{netdisk_bonus}M空间"
+            else:
+                # 根据原始逻辑，这个分支也可能表示成功
+                return True, f"签到成功，获得{netdisk_bonus}M空间"
+        except requests.exceptions.RequestException as e:
+            # 处理网络相关的错误
+            return False, f"签到网络请求失败: {e}"
+        except json.JSONDecodeError:
+            # 处理响应不是有效JSON的情况
+            return False, "签到失败：无法解析服务器响应"
+        except Exception as e:
+            return False, f"签到失败: {e}"
 
     def run(self) -> Dict[str, any]:
         """
         执行完整的登录和并发签到流程。
-        登录后，使用 20 个线程并发执行 50 个签到任务。
+        登录后，使用50个线程并发执行签到任务。
         """
         results = {'account_id': self.account_id, 'login': '登录失败', 'sign_in_summary': None}
-        
+
         if not self.login():
             return results
         results['login'] = '登录成功'
 
         sign_in_results = []
-        TOTAL_SIGN_ATTEMPTS = 50 # 总共尝试 50 次签到
+        # 使用50个线程并发执行签到
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            # 提交50个签到任务
+            future_to_run = {executor.submit(self.sign_in): i for i in range(50)}
 
-        # 使用 20 个线程并发执行签到
-        print(f"[{self.account_id}] 开始并发执行 {TOTAL_SIGN_ATTEMPTS} 次签到任务，并发度 {20}...")
-        with ThreadPoolExecutor(max_workers=20) as executor: # 调整并发度为 20
-            # 提交 50 个签到任务
-            future_to_task = {executor.submit(self.sign_in, i + 1): i + 1 for i in range(TOTAL_SIGN_ATTEMPTS)}
-
-            for future in as_completed(future_to_task):
-                task_num = future_to_task[future]
+            for future in as_completed(future_to_run):
+                run_num = future_to_run[future]
                 try:
                     success, msg = future.result()
                     sign_in_results.append({'success': success, 'message': msg})
                 except Exception as exc:
-                    sign_in_results.append({'success': False, 'message': f"任务 {task_num} 产生未捕获异常: {exc}"})
-        
+                    sign_in_results.append({'success': False, 'message': f"任务 {run_num + 1} 产生异常: {exc}"})
+
         # 汇总签到结果
         success_count = sum(1 for r in sign_in_results if r['success'])
-        failure_count = TOTAL_SIGN_ATTEMPTS - success_count
+        failure_count = 50 - success_count
         # 提取并去重所有返回的消息
         unique_messages = sorted(list(set(r['message'] for r in sign_in_results)))
 
         results['sign_in_summary'] = {
-            'total_attempts': TOTAL_SIGN_ATTEMPTS,
+            'total_attempts': 50,
             'success_count': success_count,
             'failure_count': failure_count,
             'messages': unique_messages
@@ -261,8 +217,14 @@ class TianYiCloudBot:
         return results
 
 def load_accounts_from_env() -> List[Tuple[str, str]]:
-    """从环境变量加载账户凭据。"""
-    load_dotenv()
+    """
+    从 .env 文件加载账户凭据。
+    .env 文件需要包含 TYYP_USERNAME 和 TYYP_PSW 两个变量。
+    如果需要支持多账户，请使用 '&' 符号分隔。
+    """
+    # 这行代码会加载当前目录下的 .env 文件
+    load_dotenv() 
+    
     username_env = os.getenv("TYYP_USERNAME")
     password_env = os.getenv("TYYP_PSW")
 
@@ -275,7 +237,7 @@ def load_accounts_from_env() -> List[Tuple[str, str]]:
     passwords = password_env.split('&')
 
     if len(usernames) != len(passwords):
-        print("错误：用户名和密码的数量不匹配。")
+        print("错误：.env 文件中的用户名和密码数量不匹配。")
         sys.exit(1)
 
     return list(zip(usernames, passwords))
@@ -310,7 +272,7 @@ def process_account(account_info: Tuple[int, Tuple[str, str]]) -> str:
     except Exception as e:
         output.append(f"### {account_id} 发生意外错误")
         output.append(f"- **错误信息**: {e}")
-    
+
     return "\n".join(output)
 
 def main():
@@ -319,13 +281,13 @@ def main():
     print("# 天翼云盘自动并发签到程序")
     print()
 
+    # 从 .env 文件加载所有账户
     accounts = load_accounts_from_env()
 
     print("## 执行概览")
     print(f"- **启动时间**: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"- **账户数量**: {len(accounts)} 个")
-    print(f"- **签到并发线程数**: 20") # 更新为 20
-    print(f"- **每个账户尝试签到次数**: 50") # 更新为 50
+    print(f"- **签到并发线程数**: 50")
     print("-" * 20)
 
     # 依次处理每个账户
