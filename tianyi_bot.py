@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import List, Dict, Tuple
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from bs4 import BeautifulSoup # 导入新的库
 
 class Config:
     """
@@ -97,35 +98,58 @@ class TianYiCloudBot:
         self.session = requests.Session()
 
     def _extract_login_params(self, html: str) -> Dict[str, str]:
-        """从HTML中提取登录参数。"""
+        """
+        【已更新】从HTML中提取登录参数 (使用 BeautifulSoup)。
+        这种方法比正则表达式更健壮，更能抵抗页面微小的改动。
+        """
         try:
-            return {
-                'captchaToken': re.findall(r"captchaToken' value='(.+?)'", html)[0],
-                'lt': re.findall(r'lt = "(.+?)"', html)[0],
-                'returnUrl': re.findall(r"returnUrl= '(.+?)'", html)[0],
-                'paramId': re.findall(r'paramId = "(.+?)"', html)[0],
-                'j_rsakey': re.findall(r'j_rsaKey" value="(\S+)"', html, re.M)[0]
+            soup = BeautifulSoup(html, 'html.parser')
+            # 通过 input 标签的 name 属性来查找对应的值
+            params = {
+                'captchaToken': soup.find('input', {'name': 'captchaToken'})['value'],
+                'lt': soup.find('input', {'name': 'lt'})['value'],
+                'returnUrl': soup.find('input', {'name': 'returnUrl'})['value'],
+                'paramId': soup.find('input', {'name': 'paramId'})['value'],
+                'j_rsakey': soup.find('input', {'name': 'j_rsaKey'})['value']
             }
-        except (IndexError, AttributeError) as e:
-            raise Exception(f"提取登录参数失败: {e}")
+            # 检查是否所有值都找到了
+            if not all(params.values()):
+                raise ValueError("一个或多个登录参数的值为空")
+            return params
+        except (TypeError, AttributeError, ValueError) as e:
+            # 如果 find 返回 None 或者没有 'value' 属性，会触发 TypeError 或 AttributeError
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            print("!!! 关键错误：解析登录页面失败。")
+            print(f"!!! 无法找到某个登录参数 <input> 标签或其 'value' 属性。错误: {e}")
+            print("!!! 极有可能是天翼云盘更新了登录页面，导致标签的 'name' 属性改变。")
+            print("!!! 下面是脚本获取到的HTML页面内容（部分），请检查它是否为预期的登录页:")
+            print("--------------------------------------------------------")
+            # 只打印部分HTML内容，避免日志过长
+            print(html[:2000] + '...' if len(html) > 2000 else html)
+            print("--------------------------------------------------------")
+            raise Exception(f"提取登录参数失败，原始错误: {e}")
+
 
     def login(self) -> bool:
         """登录天翼云盘。"""
         try:
-            resp_token = self.session.get(Config.LOGIN_TOKEN_URL)
+            resp_token = self.session.get(Config.LOGIN_TOKEN_URL, timeout=15)
             match_redirect = re.search(r"https?://[^\s'\"]+", resp_token.text)
             if not match_redirect:
                 print("在初始响应中找不到重定向URL。")
                 return False
 
-            resp_redirect = self.session.get(match_redirect.group())
+            resp_redirect = self.session.get(match_redirect.group(), timeout=15)
             match_href = re.search(r"]*href=\"([^\"]+)\"", resp_redirect.text)
             if not match_href:
                 print("找不到登录链接href。")
                 return False
 
-            resp_login_page = self.session.get(match_href.group(1))
+            resp_login_page = self.session.get(match_href.group(1), timeout=15)
+            
+            # 使用新的、更健壮的函数来解析参数
             login_params = self._extract_login_params(resp_login_page.text)
+            
             self.session.headers.update({"lt": login_params['lt']})
 
             encrypted_username = CryptoUtils.rsa_encode(login_params['j_rsakey'], self.username)
@@ -138,25 +162,27 @@ class TianYiCloudBot:
                 "returnUrl": login_params['returnUrl'], "mailSuffix": "@189.cn",
                 "paramId": login_params['paramId']
             }
-            resp_submit = self.session.post(Config.LOGIN_SUBMIT_URL, data=login_data, headers=Config.LOGIN_HEADERS, timeout=10)
+            resp_submit = self.session.post(Config.LOGIN_SUBMIT_URL, data=login_data, headers=Config.LOGIN_HEADERS, timeout=15)
 
             result = resp_submit.json()
             if result.get('result') == 0:
-                self.session.get(result['toUrl'])
+                self.session.get(result['toUrl'], timeout=15)
                 return True
             else:
                 print(f"登录失败，信息：{result.get('msg')}")
                 return False
+        except requests.exceptions.RequestException as e:
+            print(f"登录过程中发生网络错误：{e}")
+            return False
         except Exception as e:
+            # 这里会捕获来自 _extract_login_params 的错误
             print(f"登录过程中发生错误：{e}")
             return False
 
     def sign_in(self) -> Tuple[bool, str]:
         """执行每日签到。"""
         try:
-            # 引入一个微小的随机延迟（0.1到0.5秒），以避免触发服务器的速率限制
             time.sleep(random.uniform(0.1, 0.5))
-
             rand = str(round(time.time() * 1000))
             sign_url = Config.SIGN_URL_TEMPLATE.format(rand)
             response = self.session.get(sign_url, headers=Config.SIGN_HEADERS, timeout=10)
@@ -166,22 +192,16 @@ class TianYiCloudBot:
             if result.get('isSign'):
                 return True, f"已签到，获得{netdisk_bonus}M空间"
             else:
-                # 根据原始逻辑，这个分支也可能表示成功
                 return True, f"签到成功，获得{netdisk_bonus}M空间"
         except requests.exceptions.RequestException as e:
-            # 处理网络相关的错误
             return False, f"签到网络请求失败: {e}"
         except json.JSONDecodeError:
-            # 处理响应不是有效JSON的情况
             return False, "签到失败：无法解析服务器响应"
         except Exception as e:
             return False, f"签到失败: {e}"
 
     def run(self) -> Dict[str, any]:
-        """
-        执行完整的登录和并发签到流程。
-        登录后，使用50个线程并发执行签到任务。
-        """
+        """执行完整的登录和并发签到流程。"""
         results = {'account_id': self.account_id, 'login': '登录失败', 'sign_in_summary': None}
 
         if not self.login():
@@ -189,25 +209,18 @@ class TianYiCloudBot:
         results['login'] = '登录成功'
 
         sign_in_results = []
-        # 使用50个线程并发执行签到
         with ThreadPoolExecutor(max_workers=50) as executor:
-            # 提交50个签到任务
             future_to_run = {executor.submit(self.sign_in): i for i in range(50)}
-
             for future in as_completed(future_to_run):
-                run_num = future_to_run[future]
                 try:
                     success, msg = future.result()
                     sign_in_results.append({'success': success, 'message': msg})
                 except Exception as exc:
-                    sign_in_results.append({'success': False, 'message': f"任务 {run_num + 1} 产生异常: {exc}"})
-
-        # 汇总签到结果
+                    sign_in_results.append({'success': False, 'message': f"产生异常: {exc}"})
+        
         success_count = sum(1 for r in sign_in_results if r['success'])
         failure_count = 50 - success_count
-        # 提取并去重所有返回的消息
         unique_messages = sorted(list(set(r['message'] for r in sign_in_results)))
-
         results['sign_in_summary'] = {
             'total_attempts': 50,
             'success_count': success_count,
@@ -217,46 +230,31 @@ class TianYiCloudBot:
         return results
 
 def load_accounts_from_env() -> List[Tuple[str, str]]:
-    """
-    从 .env 文件加载账户凭据。
-    .env 文件需要包含 TYYP_USERNAME 和 TYYP_PSW 两个变量。
-    如果需要支持多账户，请使用 '&' 符号分隔。
-    """
-    # 这行代码会加载当前目录下的 .env 文件
+    """从 .env 文件加载账户凭据。"""
     load_dotenv() 
-    
     username_env = os.getenv("TYYP_USERNAME")
     password_env = os.getenv("TYYP_PSW")
-
     if not username_env or not password_env:
         print("错误：环境变量 TYYP_USERNAME 或 TYYP_PSW 未设置。")
         print("请在 .env 文件或系统环境中配置它们。")
         sys.exit(1)
-
     usernames = username_env.split('&')
     passwords = password_env.split('&')
-
     if len(usernames) != len(passwords):
         print("错误：.env 文件中的用户名和密码数量不匹配。")
         sys.exit(1)
-
     return list(zip(usernames, passwords))
 
 def process_account(account_info: Tuple[int, Tuple[str, str]]) -> str:
-    """
-    处理单个账户（登录、并发签到）并返回格式化的结果字符串。
-    """
+    """处理单个账户（登录、并发签到）并返回格式化的结果字符串。"""
     i, (username, password) = account_info
     account_id = f"账户{i} ({username[:3]}***)"
     output = [f"## {account_id}"]
-
     try:
         bot = TianYiCloudBot(username, password, account_id)
         results = bot.run()
-
         output.append("### 执行结果")
         output.append(f"- **登录状态**: {results['login']}")
-
         if results.get('sign_in_summary'):
             summary = results['sign_in_summary']
             output.append("- **并发签到结果**:")
@@ -272,7 +270,6 @@ def process_account(account_info: Tuple[int, Tuple[str, str]]) -> str:
     except Exception as e:
         output.append(f"### {account_id} 发生意外错误")
         output.append(f"- **错误信息**: {e}")
-
     return "\n".join(output)
 
 def main():
@@ -280,24 +277,17 @@ def main():
     start_time = datetime.now()
     print("# 天翼云盘自动并发签到程序")
     print()
-
-    # 从 .env 文件加载所有账户
     accounts = load_accounts_from_env()
-
     print("## 执行概览")
     print(f"- **启动时间**: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"- **账户数量**: {len(accounts)} 个")
     print(f"- **签到并发线程数**: 50")
     print("-" * 20)
-
-    # 依次处理每个账户
     for i, (username, password) in enumerate(accounts, 1):
         account_info = (i, (username, password))
         result_str = process_account(account_info)
         print(result_str)
-        print() # 添加换行符以便更好地分隔
-
-    # 最终总结
+        print()
     end_time = datetime.now()
     duration = end_time - start_time
     print("---")
