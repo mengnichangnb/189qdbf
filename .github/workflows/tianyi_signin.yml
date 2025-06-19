@@ -23,9 +23,8 @@ jobs:
           pip install requests python-dotenv rsa
 
       - name: Run sign-in script
-        env:
-          TYYP_USERNAME: ${{ secrets.TYYP_USERNAME }}
-          TYYP_PSW: ${{ secrets.TYYP_PSW }}
-          MAX_WORKERS: ${{ vars.MAX_WORKERS || 20 }}
+        # 移除了 env: 部分，因为脚本会直接从 .env 文件中加载变量
         run: |
+          # 确保 .env 文件存在于当前工作目录，即仓库根目录
+          # load_dotenv() 会自动找到并加载它
           python tianyi_bot.py
